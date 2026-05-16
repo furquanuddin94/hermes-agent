@@ -24,15 +24,17 @@ Scope (what we expose):
     heartbeat/show/list/create/            handoff (stateless: read env var,
     unblock/link)                          write ~/.hermes/kanban.db)
 
+Stateless agent-loop tools we DO expose:
+  - memory, session_search               — local wrappers read/write the same
+                                           profile-scoped HERMES_HOME as the
+                                           spawned MCP process, without needing
+                                           the parent AIAgent loop.
+
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
   - clarify                              — codex's own UX
-  - memory, session_search               — exposed through local stateless
-                                           wrappers that read the same
-                                           HERMES_HOME as the spawned MCP
-                                           process.
   - delegate_task / todo                 — `_AGENT_LOOP_TOOLS` in Hermes
                                            (model_tools.py). They require
                                            running AIAgent/TodoStore state, so
@@ -246,9 +248,11 @@ def _build_server() -> Any:
         # FastMCP derives the MCP input schema from the Python callable
         # signature. A generic **kwargs wrapper advertises a single `kwargs`
         # argument and Codex then sends {"kwargs": ...}, which Hermes tools do
-        # not understand. Generate a small named-parameter wrapper from the
-        # authoritative Hermes JSON schema so MCP clients call tools directly
-        # with action=..., schedule=..., etc.
+        # not understand. Generate a small named-parameter wrapper from Hermes'
+        # authoritative JSON schema so MCP clients call tools directly with
+        # action=..., schedule=..., etc. After registration, patch FastMCP's
+        # stored schema as an extra guard for SDK versions that ignore
+        # callable signatures.
         def _make_handler(tool_name: str, schema: dict[str, Any]):
             properties = (schema or {}).get("properties") or {}
             required = set((schema or {}).get("required") or [])
