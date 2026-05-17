@@ -592,6 +592,7 @@ def _build_hermes_tools_mcp_entry() -> dict:
     # Quiet mode + redaction defaults so the MCP wire stays clean.
     env["HERMES_QUIET"] = "1"
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
+    env["HERMES_GATEWAY_SESSION"] = env.get("HERMES_GATEWAY_SESSION", "1")
 
     out: dict[str, Any] = {
         "command": sys.executable,

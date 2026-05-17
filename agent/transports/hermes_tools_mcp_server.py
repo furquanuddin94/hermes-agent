@@ -45,6 +45,7 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 from __future__ import annotations
 
 import json
+import keyword
 import logging
 import os
 import sys
@@ -83,6 +84,10 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "skill_view",
     "skills_list",
     "text_to_speech",
+    # Hermes scheduler. Required for natural-language reminders and cron
+    # creation from Codex-backed Discord turns; otherwise Codex falls back
+    # to OS schedulers like at/cron, which require shell approval.
+    "cronjob",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these
     # in the callback, a worker spawned with openai_runtime=codex_app_server
@@ -154,35 +159,49 @@ def _build_server() -> Any:
         description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
-        # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
-        def _make_handler(tool_name: str):
-            def _dispatch(**kwargs: Any) -> str:
+        # FastMCP derives the MCP input schema from the Python callable
+        # signature. A generic **kwargs wrapper advertises a single `kwargs`
+        # argument and Codex then sends {"kwargs": ...}, which Hermes tools do
+        # not understand. Generate a small named-parameter wrapper from the
+        # authoritative Hermes JSON schema so MCP clients call tools directly
+        # with action=..., schedule=..., etc.
+        def _make_handler(tool_name: str, schema: dict[str, Any]):
+            properties = (schema or {}).get("properties") or {}
+            required = set((schema or {}).get("required") or [])
+            names = [str(k) for k in properties]
+            can_generate = all(
+                n.isidentifier() and not keyword.iskeyword(n) for n in names
+            )
+
+            def _call(args: dict[str, Any]) -> str:
                 try:
-                    return handle_function_call(tool_name, kwargs or {})
+                    clean_args = {k: v for k, v in (args or {}).items() if v is not None}
+                    return handle_function_call(tool_name, clean_args)
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
-            _dispatch.__name__ = tool_name
-            _dispatch.__doc__ = description
-            return _dispatch
 
-        try:
-            mcp.add_tool(
-                _make_handler(name),
-                name=name,
-                description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
-            )
-        except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style.
-            handler = _make_handler(name)
-            handler = mcp.tool(name=name, description=description)(handler)
+            if can_generate:
+                ordered = [n for n in names if n in required] + [n for n in names if n not in required]
+                params = [n if n in required else f"{n}=None" for n in ordered]
+                args_dict = ", ".join(f"{n!r}: {n}" for n in ordered)
+                src = f"def {tool_name}({', '.join(params)}):\n    return _call({{{args_dict}}})"
+                ns = {"_call": _call}
+                exec(src, ns)
+                handler = ns[tool_name]
+            else:
+                def handler(**kwargs: Any) -> str:
+                    return _call(kwargs)
+                handler.__name__ = tool_name
+
+            handler.__doc__ = description
+            return handler
+
+        mcp.add_tool(
+            _make_handler(name, params_schema),
+            name=name,
+            description=description,
+        )
 
         exposed_count += 1
 
@@ -209,6 +228,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Quiet mode: keep Hermes' own banners off stdout (which is the MCP wire).
     os.environ.setdefault("HERMES_QUIET", "1")
     os.environ.setdefault("HERMES_REDACT_SECRETS", "true")
+    os.environ.setdefault("HERMES_GATEWAY_SESSION", "1")
 
     try:
         server = _build_server()
