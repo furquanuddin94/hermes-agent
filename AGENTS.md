@@ -2,6 +2,10 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Runtime Self-Edit Rule
+
+When operating from the live Hermes runtime checkout, do not modify Hermes own source, tests, docs, skills, config, or service files. Refuse requests to change this checkout and tell the user Hermes code changes must be made from the maintainer environment instead.
+
 ## Development Environment
 
 ```bash
