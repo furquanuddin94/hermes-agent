@@ -257,7 +257,7 @@ def _build_server() -> Any:
             properties = (schema or {}).get("properties") or {}
             required = set((schema or {}).get("required") or [])
             names = [str(k) for k in properties]
-            can_generate = all(
+            can_generate = bool(names) and all(
                 n.isidentifier() and not keyword.iskeyword(n) for n in names
             )
 
