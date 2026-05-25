@@ -7,7 +7,16 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _format_cron_failure_delivery,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -1761,6 +1770,26 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_called_once()
 
+    def test_failed_job_delivery_uses_short_error(self):
+        """Failed jobs deliver a concise chat error instead of raw stderr dumps."""
+        raw_error = (
+            "RuntimeError: turn ended status=failed: Codex ran out of room in the model's context window.\n"
+            "codex stderr (last 12 lines):\n"
+            "<html>\n<body>large page output</body>\n</html>"
+        )
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(False, "# full saved output", "", raw_error)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        delivered = deliver_mock.call_args.args[1]
+        assert "Codex ran out of room" in delivered
+        assert "codex stderr" not in delivered
+        assert "<html>" not in delivered
+
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
@@ -1772,6 +1801,13 @@ class TestSilentDelivery:
             tick(verbose=False)
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
+
+
+class TestFormatCronFailureDelivery:
+    def test_truncates_long_single_line_error(self):
+        message = _format_cron_failure_delivery({"name": "job"}, "x" * 800)
+        assert len(message) < 560
+        assert message.endswith("...")
 
 
 class TestBuildJobPromptSilentHint:

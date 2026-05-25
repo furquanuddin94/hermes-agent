@@ -145,6 +145,18 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _format_cron_failure_delivery(job: dict, error: Optional[str]) -> str:
+    """Return a concise failure message for chat delivery."""
+    job_name = job.get("name", job.get("id", "unknown"))
+    reason = (error or "unknown error").strip()
+    if "codex stderr" in reason:
+        reason = reason.split("codex stderr", 1)[0].rstrip()
+    reason = next((line.strip() for line in reason.splitlines() if line.strip()), reason)
+    if len(reason) > 500:
+        reason = reason[:497].rstrip() + "..."
+    return f"⚠️ Cron job '{job_name}' failed.\nReason: {reason}"
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -1752,7 +1764,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                deliver_content = final_response if success else _format_cron_failure_delivery(job, error)
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
